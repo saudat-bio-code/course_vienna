@@ -1,0 +1,402 @@
+---
+title: "Haplovalidate-test"
+author: "Sara Duarri Redondo, Dagný Ásta Rúnarsdóttir"
+date: '2022-12-08'
+output: html_document
+---
+
+Load needed packages to use haploreconstruct & haplovalidate
+```{r setup, include=FALSE}
+library(data.table)
+options(scipen=999)
+library(haplovalidate)
+library(haploReconstruct)
+library(randomcoloR)
+library(ggpubr)
+```
+##HAPLORECONSTRUCT
+
+###############################
+#load functions (+ required packages)
+###############################
+```{r}
+#setwd("/Users/dagny/Dropbox (PopGen)/haplotypes/")
+source("functions/EEC.freq.traj.R")
+source("functions/EEC.manhattan.plot.R")
+sessionInfo()
+```
+
+###############################
+#function for clustering
+###############################
+```{r}
+perform_clustering<-function(l.freqs, l.min.cl.cor=min.cl.cor, l.min.minor.freq=min.minor.freq, l.max.minor.freq=max.minor.freq,
+                             l.min.freq.change=min.freq.change,l.min.repl=min.repl,l.min.cl.size=min.cl.size,
+                             l.win.size=win.size,l.ngen=ngen,l.run.id="01",l.chr=c("2","3")){
+  print("Initialize Time Series ...")
+  l.markers<-data.frame("chr"=character(),"pos"=numeric(),"cluster"=numeric())
+  #perform haplotype reconstruct for the chromosomes present in your data:
+  for(l.chr.iter in l.chr){
+  #format time series data 
+  temp.freqs<-subset(l.freqs,chr==l.chr.iter)
+  timeSeries<-initialize_SNP_time_series(chr=temp.freqs$chr,pos=temp.freqs$pos,base.freq=temp.freqs$basePops,
+                                         lib.freqs=temp.freqs[,grep("L",colnames(temp.freqs)),with=F],pop.ident=rep(c(1:10),l.ngen),
+                                         pop.generation = rep(seq(0,l.ngen*10-10,10),each=10),
+                                         use.libs = rep(T,10*l.ngen), min.minor.freq=l.min.minor.freq,
+                                         max.minor.freq = l.max.minor.freq, winsize = l.win.size, min.lib.frac = 0.75,
+                                         minfreqchange = l.min.freq.change, win.scale = "bp", minrepl = l.min.repl)
+ 
+  print(paste("Clustering on chromosome",l.chr.iter,"is running. Please be patient ...",sep=" "))
+  hbs<-reconstruct_hb(timeSeries,chrom=l.chr.iter, min.cl.size=l.min.cl.size, min.cl.cor=l.min.cl.cor,min.inter=4,single.win=T)
+  
+  if (number_hbr(hbs)!=0){
+      n.clusters<-number_hbr(hbs)
+      for (j in c(1:n.clusters)){
+        temp.markers<-data.frame("chr"=rep(l.chr.iter,length(markers(hbs,j))),"pos"=markers(hbs,j),"cluster"=rep(j,length(markers(hbs,j))))
+        l.markers<-rbind(l.markers,temp.markers)
+      }
+  }
+  }
+  #arrange & format result 
+  l.markers<-arrange(l.markers,chr,pos)
+  l.markers$id<-paste(l.markers$chr,l.markers$cluster,sep=".")
+  #save clustering as .rds 
+  toSave<-paste("HaploReconstruct-Min-Cl-Corr",l.min.cl.cor,"-Min-Minor-Freq",l.min.minor.freq,
+                "-Max-Minor-Freq",l.max.minor.freq,"-Min-Freq-Change",l.min.freq.change,"-Min-Repl",l.min.repl,
+                "-Min-Cl-Size",l.min.cl.size,"-Win-Size",l.win.size,"Run-ID",l.run.id,".rds",sep="")
+  saveRDS(hbs,file = toSave)
+  return(l.markers)
+}
+
+obtain_colors<-function(x,y){
+  n <- length(unique(x$id))
+  palette <- distinctColorPalette(n)
+  x$id<-factor(x$id)
+  x$color<-x$id
+  levels(x$color)<-palette
+  z<-merge(x,y,by=c("chr","pos"))
+  return(z)
+}
+```
+
+
+###############################
+#data
+###############################
+```{r}
+#target sites:
+targets<-readRDS("data/929_targets_all.rds")
+#ACER CMH results:
+cmh<-readRDS("data/sim929_acer_cmh.rds")
+colnames(cmh)<-c("chr","pos","value")
+#sync file:
+candSNP<-readRDS("data/sim929_cands.rds")
+```
+
+
+Explore the data
+```{r}
+cmh
+#View(cmh)
+candSNP
+#View(cands)
+```
+cmh is storing a table with 1) chromosome 2) position 3)log10(pval), from CMH. This includes signficant and non-significant snps
+
+candSNP includes 1) chromosome 2) position 3) ref allele 4) rising allele 5) falling allele 6) mean starting/base frequency 7-76) frequencies of each replicate across each time point (sorted by time points). To save some memory, cands is prefiltered, but usually this should have the same number of rows as cmh.
+
+(If needed, how to create a cands file?)
+
+
+
+# parameters for clustering  
+
+```{r}
+min.minor.freq<-0
+max.minor.freq<-1
+min.freq.change<-0.15
+min.repl<-2
+min.cl.size<-20
+win.size<-3e+06
+ngen<-7
+min.cl.cor<-0.6
+
+```
+
+
+
+#actual clustering
+
+```{r}
+stringent.cluster<-perform_clustering(l.freqs = candSNP,l.run.id = "001",l.min.cl.cor = min.cl.cor)
+table(stringent.cluster$id)
+
+relaxed.cluster<-perform_clustering(l.freqs = candSNP,l.run.id = "002",l.min.cl.cor = 0.2)
+table(relaxed.cluster$id)
+```
+
+
+#plotting:
+
+```{r}
+
+stringent.cluster<-obtain_colors(stringent.cluster,cmh)
+#png("res/demo-stringent.cluster.png",width=750,height=500)
+print(get.plot.highlight(data = cmh,l.main="Stringent Clustering",highlight = stringent.cluster,highlight.col = stringent.cluster$color))
+#dev.off()
+
+#allele frequency trajectories:
+#png("res/demo-stringent.cluster.af.png",width=750,height=500)
+print(get.af.traj(l.sync=candSNP,l.cluster=stringent.cluster,l.cluster.id = "2.1"))
+#dev.off()
+
+relaxed.cluster<-obtain_colors(relaxed.cluster,cmh)
+#png("res/demo-relaxed.cluster.png",width = 750,height = 500)
+print(get.plot.highlight(data=cmh,l.main = "Relaxed Clustering",highlight = relaxed.cluster,highlight.col = relaxed.cluster$color))
+#dev.off()
+
+#png("res/demo-relaxed.cluster.af.png",width = 750,height = 500)
+print(get.af.traj(l.sync = candSNP,l.cluster = relaxed.cluster,l.cluster.id = "2.1"))
+#dev.off()
+```
+
+## HAPLORECONSTRUCT SOLUTIONS 
+
+#### Task 0 
+
+```{r}
+table(targets$chr)
+#7 targets on chr 2, 8 on chr 3 
+ggscatter(data=targets,x="freq",y="s")
+#negative, non-linear relationship betweenn selection coefficient and starting allele frequency 
+```
+
+#### Task 1
+
+```{r}
+#number of blocks: 
+length(table(stringent.cluster$id))
+length(table(relaxed.cluster$id))
+
+obtain_length<-function(x){
+  range_temp<-c()
+  for(id.iter in unique(x$id)){
+    temp<-subset(x,id==id.iter)
+    min_temp<-min(temp$pos)
+    max_temp<-max(temp$pos)
+    range_temp<-c(range_temp,max_temp-min_temp)
+  }
+  return(range_temp)
+}
+
+#SNP number ~ min.cl.cor
+marker_SNPs<-data.frame(n=c(table(stringent.cluster$id),table(relaxed.cluster$id)))
+marker_SNPs$type<-c(rep("stringent",length(unique(stringent.cluster$id))),rep("relaxed",length(unique(relaxed.cluster$id))))
+ggboxplot(data=marker_SNPs,x="type",y="n")
+
+#block length ~ min.cl.cor
+block_length<-data.frame(length=c(obtain_length(stringent.cluster),obtain_length(relaxed.cluster)))
+block_length$type<-c(rep("stringent",length(unique(stringent.cluster$id))),rep("relaxed",length(unique(relaxed.cluster$id))))
+ggboxplot(data=block_length,x="type",y="length")
+```
+
+#### Task 2
+```{r}
+table(targets$pos%in%stringent.cluster$pos)
+table(targets$pos%in%relaxed.cluster$pos)
+
+id_stringent<-which(targets$pos%in%stringent.cluster$pos)
+pos_stringent<-targets$pos[id_stringent]
+table(stringent.cluster$id[stringent.cluster$pos%in%pos_stringent])
+#stringent: blocks without targets 
+
+id_relaxed<-which(targets$pos%in%relaxed.cluster$pos)
+pos_relaxed<-targets$pos[id_relaxed]
+table(relaxed.cluster$id[relaxed.cluster$pos%in%pos_relaxed])
+#relaxed: blocks with multiple targets
+
+targets$stringent<-rep("No", length(targets$stringent))
+targets$stringent[id_stringent]<-"Yes"
+targets$stringent<-as.factor(targets$stringent)
+ggscatter(targets,x="freq",y="s",color = "stringent")
+#higher s with same freq tend to be caught
+```
+
+
+#### Task 3 
+
+```{r}
+relaxed.cluster.small<-perform_clustering(candSNP,l.min.cl.cor = 0.2,l.win.size = 5e+05)
+relaxed.cluster.big<-perform_clustering(candSNP,l.min.cl.cor = 0.2, l.win.size = 1e+07)
+
+r<-obtain_colors(relaxed.cluster.small,cmh)
+#png("res/demo-relaxed.cluster.s.png",width = 750,height = 500)
+print(get.plot.highlight(data=cmh,l.main = "Relaxed Clustering small",highlight = r,highlight.col = r$color))
+#dev.off()
+
+#png("res/demo-relaxed.cluster.s.af.png",width = 750,height = 500)
+print(get.af.traj(l.sync = candSNP,l.cluster = r,l.cluster.id = "2.1"))
+#dev.off()
+
+r<-obtain_colors(relaxed.cluster.big,cmh)
+#png("res/demo-relaxed.cluster.b.png",width = 750,height = 500)
+print(get.plot.highlight(data=cmh,l.main = "Relaxed Clustering big",highlight = r,highlight.col = r$color))
+#dev.off()
+
+#png("res/demo-relaxed.cluster.b.af.png",width = 750,height = 500)
+print(get.af.traj(l.sync = candSNP,l.cluster = r,l.cluster.id = "2.1"))
+#dev.off()
+
+
+length(table(relaxed.cluster.big$id))
+length(table(relaxed.cluster$id))
+length(table(relaxed.cluster.small$id))
+#more clusters with decreasing window size 
+
+stringent.cluster.small<-perform_clustering(candSNP,l.min.cl.cor = 0.6,l.win.size = 5e+05)
+stringent.cluster.big<-perform_clustering(candSNP,l.min.cl.cor = 0.6,l.win.size = 1e+07)
+
+r<-obtain_colors(stringent.cluster.big,cmh)
+
+#png("res/demo-stringent.cluster.b.af.png",width = 750,height = 500)
+print(get.af.traj(l.sync = candSNP,l.cluster = r,l.cluster.id = "2.1"))
+#dev.off()
+
+#png("res/demo-stringent.cluster.b.png",width=750,height=500)
+print(get.plot.highlight(data = cmh,l.main="Stringent Clustering big",highlight = r,highlight.col = r$color))
+#dev.off()
+
+r<-obtain_colors(stringent.cluster.small,cmh)
+
+
+#png("res/demo-stringent.cluster.s.af.png",width = 750,height = 500)
+print(get.af.traj(l.sync = candSNP,l.cluster = r,l.cluster.id = "2.1"))
+#dev.off()
+
+#png("res/demo-stringent.cluster.s.png",width=750,height=500)
+print(get.plot.highlight(data = cmh,l.main="Stringent Clustering small",highlight = r,highlight.col = r$color))
+#dev.off()
+
+length(table(stringent.cluster.big$id))
+length(table(stringent.cluster$id))
+length(table(stringent.cluster.small$id))
+
+```
+
+
+## HAPLOVALIDATE
+
+Define information of our sample
+```{r}
+repl <- 1:10 #replicates id
+gens <- seq(0,60,10) #generations sampled
+ngen=length(gens) #number of time points sampled
+nrep=length(repl) #number of replicates
+
+##parameters for haplovalidate##
+# define which columns contain the base population (e.g. the first 5 columns)
+base.pops <- c(rep(TRUE, length(repl)),rep(FALSE,length(repl)*(ngen-1)))
+#define which columns should be included in the analysis
+compare <- rep(TRUE,length(repl)*ngen)
+# define which column contains which replicate 
+pop.ident <- rep(repl,ngen)
+#define which column contains which generation
+pop.generation  <- rep(gens, each=length(repl))
+```
+
+Load simulated data
+```{r}
+#define our working directory
+wdir="/Users/sduarri/Dropbox (PopGen)/Sara/year2/eecourse/day3-haplotypes/"
+#wdir="~/Dropbox (PopGen)/Sara/year2/eecourse/haplotypes/"
+setwd(wdir) #note , run directly on terminal :)
+#load cmh result and our simulated data
+cmh.raw <-  readRDS(paste0(wdir, "data/", "sim929_acer_cmh.rds"))
+cands.all <- readRDS(paste0(wdir, "data/","sim929_cands.rds"))
+```
+
+
+cmh is storing a table with 1) chromosome 2) position 3)log10(pval), from CMH. This includes signficant and non-significant snps
+
+Cands includes 1) chromosome 2) position 3) ref allele 4) rising allele 5) falling allele 6) mean starting/base frequency 7-76) frequencies of each replicate across each time point (sorted by time points). To save some memory, cands is prefiltered, but usually this should have the same number of rows as cmh.
+
+(If needed, how to create a cands file?)
+```{r cars}
+#from a sync file
+
+# define which columns of the sync file contain the base population (e.g. the first 5 columns)
+#base.pops <- c(rep(TRUE, length(repl)),rep(FALSE,length(repl)*(ngen-1)))
+
+# define which columns should be used to polarize for the rising allele
+#list(c(F0Rep1,FNRep1),c(F0Rep2,FNRep2),...))
+#polaRise =list()
+#for (r in repl){
+ # polaRise[[r]]=(c(r, (r+nrep*(ngen-1))))
+#}
+
+#cands.all <- sync_to_frequencies(syncfile,base.pops=base.pops,header=FALSE,mincov=15,polaRise = polaRise)
+
+```
+It can also be created from a vcf file
+1. obtain a AF file, this usually provides ref & alt, and usually tracks af for alt snp (check if that is your case)
+2. define median starting frequency for each SNP & store it
+3. define median "end" frequency (generation that we want to polarize AFC for)
+4a. if AFC end-starting (median frequency) is positive, no need to change AF. rising = alt, falling = ref
+4b. if AFC is negative change all frequencies for the SNP to 1-AF. rising = ref, falling = alt
+
+
+Get significant snps, and their AF
+```{r}
+cmh <- cmh.raw[score>1.3,]
+cands= merge(cmh[,.(chr,pos)],cands.all,on=.(chr,pos))
+```
+
+
+
+Define windows size for each chromosome
+```{r}
+parameters <- get.mncs.win(cands,cmh, wins=seq(0.1,10,0.05),0.01)
+
+print(parameters)
+```
+Run haplovalidate!
+```{r}
+start <- Sys.time()
+
+happy <- haplovalidate(cands,cmh,parameters=parameters,pop.ident=pop.ident,pop.generation=pop.generation,base.pops=base.pops,compare=compare,takerandom=2000,filterrange=5000)
+#happy <- haplovalidate(cands,cmh,parameters=parameters,takerandom=2000,filterrange=5000, repl = repl, gens = gens)
+end <- Sys.time()
+
+#plot dominant blocks (will be stored in your working directory)
+plot.haplovalidate(blocks=happy$dominant_haplotypes,cmh,title="sim929",label=T)
+
+#if needed save the data
+saveRDS(happy,paste0(wdir,"results/", "sim929_hapval.rds"))
+
+```
+
+
+Check if we detected selected targets
+```{r}
+happy_dom <- happy$dominant_haplotypes
+
+#cmh <-  readRDS(paste0(wdir, "data/", "sim929_acer_cmh.rds"))
+#cands.all <- readRDS(paste0(wdir, "data/","sim929_cands.rds"))
+
+#load selected targets
+targets <-  readRDS(paste0(wdir, "data/", "929_targets_all.rds"))
+happy.cmh <- merge(cmh,happy_dom,by=c("chr","pos"))
+targets.cmh <- merge(cmh,targets,by=c("chr","pos"))
+
+#plot
+par(mfrow=c(2,1))
+for (i in 2:3){
+cmh[chr==i,plot(pos,score,pch=19,col="grey")]
+happy.cmh[chr==i,points(pos,score,col=factor(tag),pch=19)]
+targets.cmh[chr==i,points(pos,score,col="orange",pch=19)]
+}
+
+```
+
+
+
